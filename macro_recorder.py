@@ -29,7 +29,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 CONFIG_PATH = os.path.join(os.path.dirname(SCRIPT_PATH), "config.json")
@@ -37,6 +37,11 @@ CONFIG_PATH = os.path.join(os.path.dirname(SCRIPT_PATH), "config.json")
 # Where the self-updater looks for the latest version.
 GITHUB_RAW = ("https://raw.githubusercontent.com/"
               "BABAISABIGFATPOOP/macro-recorder/main/macro_recorder.py")
+RELEASES_URL = "https://github.com/BABAISABIGFATPOOP/macro-recorder/releases/latest"
+
+# True when running as a packaged PyInstaller .exe (can't self-overwrite the
+# source in that case, so we just point the user at the Releases page).
+IS_FROZEN = getattr(sys, "frozen", False)
 
 DEFAULT_CONFIG = {
     "record_mouse": True,
@@ -654,13 +659,25 @@ class MacroRecorder:
             return
 
         if version_tuple(remote_ver) > version_tuple(__version__):
-            self.root.after(0, lambda: self._on_update_found(remote_ver, remote_src))
+            self.root.after(0, lambda: self._on_update_found(remote_ver, remote_src, manual))
         elif manual:
             self._set_status(f"Up to date (v{__version__}).")
 
-    def _on_update_found(self, remote_ver, remote_src):
+    def _on_update_found(self, remote_ver, remote_src, manual=False):
         """A newer version exists — install it silently, or ask first if the
         'install automatically' setting is turned off."""
+        if IS_FROZEN:
+            # A packaged .exe can't rewrite itself with Python source — point
+            # the user at the Releases page for the new download instead.
+            self._set_status(f"v{remote_ver} available — see Releases page")
+            if manual:
+                if messagebox.askyesno(
+                        "Update available",
+                        f"A new version (v{remote_ver}) is available.\n"
+                        f"You have v{__version__}.\n\nOpen the download page now?"):
+                    import webbrowser
+                    webbrowser.open(RELEASES_URL)
+            return
         if self.config["auto_install"]:
             self._install_update(remote_ver, remote_src)
         else:

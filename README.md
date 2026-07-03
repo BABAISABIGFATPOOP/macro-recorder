@@ -29,7 +29,18 @@ keyboard** and replays them. The overlay is small, borderless, draggable, and
   `config.json`. Function keys work best — a normal typing key used as a hotkey
   can't also appear inside a recorded macro.
 
-## Setup
+## Download
+
+Grab the latest build from the
+[**Releases** page](https://github.com/BABAISABIGFATPOOP/macro-recorder/releases/latest):
+
+- **Windows** — `MacroRecorder-Windows.zip`. Unzip and double-click
+  `MacroRecorder.exe`. No Python needed.
+- **macOS** — `MacroRecorder-Mac.zip`. Unzip and double-click
+  `MacroRecorder.command` (see `README_MAC.txt` inside for the one-time
+  permission setup). Requires Python 3.
+
+## Run from source
 
 Requires [Python 3.9+](https://python.org).
 
