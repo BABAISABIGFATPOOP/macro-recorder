@@ -30,7 +30,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.3.3"
+__version__ = "1.3.4"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 CONFIG_PATH = os.path.join(os.path.dirname(SCRIPT_PATH), "config.json")
@@ -84,12 +84,20 @@ def key_to_obj(key):
 
 
 def obj_to_key(obj):
-    """Rebuild a pynput key from a saved dict."""
+    """Rebuild a pynput key from a saved dict.
+
+    Prefer the virtual key code (the *physical* key) over the character. The
+    Shift/Ctrl/Alt keys are recorded and replayed as their own events, so the
+    character comes out right on its own. Rebuilding from the char instead makes
+    pynput toggle Shift a second time to "produce" it, which fights the recorded
+    Shift and corrupts casing / shifted symbols. Fall back to char only when no
+    vk was captured (e.g. injected Unicode).
+    """
     if "special" in obj:
         return getattr(keyboard.Key, obj["special"])
-    if obj.get("char") is not None:
-        return keyboard.KeyCode.from_char(obj["char"])
-    return keyboard.KeyCode.from_vk(obj["vk"])
+    if obj.get("vk") is not None:
+        return keyboard.KeyCode.from_vk(obj["vk"])
+    return keyboard.KeyCode.from_char(obj["char"])
 
 
 def single_key_str(key):
