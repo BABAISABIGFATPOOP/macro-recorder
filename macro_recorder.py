@@ -33,7 +33,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 # Legacy location (next to the script). A one-file .exe unpacks to a temp dir
@@ -456,6 +456,9 @@ class MacroRecorder:
         self.speed_var = tk.StringVar(value="1.0")
         tk.Spinbox(opt, values=("0.25", "0.5", "1.0", "2.0", "4.0"), width=4,
                    textvariable=self.speed_var, font=("Segoe UI", 8)).pack(side="left", padx=2)
+        # a Spinbox with `values` resets its var to the first item on creation,
+        # so set the desired default (1.0) back afterwards
+        self.speed_var.set("1.0")
 
         # status bar
         self.status = tk.StringVar()
