@@ -29,7 +29,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 CONFIG_PATH = os.path.join(os.path.dirname(SCRIPT_PATH), "config.json")
@@ -42,6 +42,7 @@ DEFAULT_CONFIG = {
     "record_mouse": True,
     "loop_forever": False,
     "auto_update": True,
+    "auto_install": True,
     "hotkeys": {
         "toggle_record": "<f9>",
         "toggle_play": "<f10>",
@@ -140,6 +141,7 @@ class MacroRecorder:
         self._kbd_ctl = keyboard.Controller()
         self._hotkeys = None
         self._settings_win = None
+        self._pending_restart = False  # set once an update is written & app idle
 
         # --- UI ---
         self._build_ui()
@@ -162,6 +164,7 @@ class MacroRecorder:
             cfg["record_mouse"] = saved.get("record_mouse", cfg["record_mouse"])
             cfg["loop_forever"] = saved.get("loop_forever", cfg["loop_forever"])
             cfg["auto_update"] = saved.get("auto_update", cfg["auto_update"])
+            cfg["auto_install"] = saved.get("auto_install", cfg["auto_install"])
             cfg["hotkeys"].update(saved.get("hotkeys", {}))
         except (OSError, ValueError):
             pass
@@ -309,6 +312,11 @@ class MacroRecorder:
                     self.status.set(val)
         except queue.Empty:
             pass
+        # apply a downloaded update only once the app is idle
+        if self._pending_restart and not self.recording and not self.playing:
+            self._pending_restart = False
+            self._restart()
+            return
         self.root.after(30, self._pump)
 
     def _set_status(self, text):
@@ -546,15 +554,26 @@ class MacroRecorder:
                        activebackground="#1e1e1e", activeforeground="#fff",
                        font=("Segoe UI", 8), bd=0, highlightthickness=0).grid(
                            row=base + 1, column=0, columnspan=2, padx=10, sticky="w")
+        self.auto_install_var = tk.BooleanVar(value=self.config["auto_install"])
+        tk.Checkbutton(win, text="Install updates automatically",
+                       variable=self.auto_install_var, command=self._on_autoinstall_toggle,
+                       bg="#1e1e1e", fg="#ccc", selectcolor="#333",
+                       activebackground="#1e1e1e", activeforeground="#fff",
+                       font=("Segoe UI", 8), bd=0, highlightthickness=0).grid(
+                           row=base + 2, column=0, columnspan=2, padx=10, sticky="w")
         tk.Button(win, text="Check for updates now", bg="#2b4a2b", fg="#dfe",
                   relief="flat", activebackground="#356135", font=("Segoe UI", 8),
                   command=lambda: self.check_for_updates(manual=True)).grid(
-                      row=base + 2, column=0, columnspan=2, pady=(6, 12))
+                      row=base + 3, column=0, columnspan=2, pady=(6, 12))
 
         win.protocol("WM_DELETE_WINDOW", self._close_settings)
 
     def _on_autoupdate_toggle(self):
         self.config["auto_update"] = self.auto_update_var.get()
+        self._save_config()
+
+    def _on_autoinstall_toggle(self):
+        self.config["auto_install"] = self.auto_install_var.get()
         self._save_config()
 
     def _close_settings(self):
@@ -635,29 +654,51 @@ class MacroRecorder:
             return
 
         if version_tuple(remote_ver) > version_tuple(__version__):
-            self.root.after(0, lambda: self._prompt_update(remote_ver, remote_src))
+            self.root.after(0, lambda: self._on_update_found(remote_ver, remote_src))
         elif manual:
             self._set_status(f"Up to date (v{__version__}).")
 
-    def _prompt_update(self, remote_ver, remote_src):
-        if not messagebox.askyesno(
-                "Update available",
-                f"A new version is available.\n\n"
-                f"  Installed:  v{__version__}\n  Latest:     v{remote_ver}\n\n"
-                f"Download and install it now?"):
-            return
+    def _on_update_found(self, remote_ver, remote_src):
+        """A newer version exists — install it silently, or ask first if the
+        'install automatically' setting is turned off."""
+        if self.config["auto_install"]:
+            self._install_update(remote_ver, remote_src)
+        else:
+            self._prompt_update(remote_ver, remote_src)
+
+    def _write_update(self, remote_src):
+        """Back up the current script and overwrite it with the new source.
+        Returns True on success."""
         try:
-            # keep a .bak so a bad update can be rolled back
             with open(SCRIPT_PATH, "r", encoding="utf-8") as f:
                 old = f.read()
             with open(SCRIPT_PATH + ".bak", "w", encoding="utf-8") as f:
                 f.write(old)
             with open(SCRIPT_PATH, "w", encoding="utf-8") as f:
                 f.write(remote_src)
+            return True
         except OSError as e:
-            messagebox.showerror("Update failed", f"Could not write the update:\n{e}")
-            return
+            self._set_status(f"Update failed: {e}")
+            return False
 
+    def _install_update(self, remote_ver, remote_src):
+        """Fully automatic path: write the update, then restart when idle."""
+        if not self._write_update(remote_src):
+            return
+        self._set_status(f"Updated to v{remote_ver} — restarting…")
+        # small delay so the message is visible; pump restarts once idle
+        self.root.after(1200, lambda: setattr(self, "_pending_restart", True))
+
+    def _prompt_update(self, remote_ver, remote_src):
+        """Ask-first path (used when auto-install is disabled)."""
+        if not messagebox.askyesno(
+                "Update available",
+                f"A new version is available.\n\n"
+                f"  Installed:  v{__version__}\n  Latest:     v{remote_ver}\n\n"
+                f"Download and install it now?"):
+            return
+        if not self._write_update(remote_src):
+            return
         if messagebox.askyesno(
                 "Update installed",
                 f"Updated to v{remote_ver}.\n\nRestart now to apply it?"):

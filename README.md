@@ -13,7 +13,7 @@ keyboard** and replays them. The overlay is small, borderless, draggable, and
 - **Loop forever** (the **∞ Loop** checkbox) — replays until you hit stop
 - Plays back at adjustable **speed** (0.25×–4×) and **repeat** count (1–9999)
 - Always-on-top, borderless overlay you can drag anywhere on screen
-- **Auto-update** — checks GitHub on startup and offers to install the newest version
+- **Auto-update** — checks GitHub on startup and installs the newest version by itself
 - Save / open macros as `.json` files
 - **Customizable global hotkeys** — work even when another app is focused. Defaults:
 
@@ -57,12 +57,20 @@ Drag the app by its title bar; close it with the **✕**.
 ## Auto-update
 
 On startup the app quietly checks this GitHub repo for a newer version (by
-comparing its `__version__`). If one exists it asks whether to install; if you
-accept, it downloads the new `macro_recorder.py`, keeps a `.bak` of the old one,
-and offers to restart. You can turn the startup check off, or trigger a check
-manually, from the **⚙** Settings panel.
+comparing its `__version__`). If one exists it **installs it automatically** —
+downloads the new `macro_recorder.py`, keeps a `.bak` of the old one, and
+restarts itself to apply it. The restart is deferred until the app is idle, so
+it never interrupts an active recording or playback.
+
+From the **⚙** Settings panel you can:
+
+- **Check for updates on startup** — turn the automatic check off entirely.
+- **Install updates automatically** — turn this off to be *asked first* before
+  each update instead of it applying silently.
+- **Check for updates now** — trigger a check on demand.
 
 > Publishing a new version is just bumping `__version__` and pushing to `main`.
+> Every running copy pulls it on its next launch.
 
 ## Notes
 
