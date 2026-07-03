@@ -30,10 +30,34 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 
 SCRIPT_PATH = os.path.abspath(__file__)
-CONFIG_PATH = os.path.join(os.path.dirname(SCRIPT_PATH), "config.json")
+# Legacy location (next to the script). A one-file .exe unpacks to a temp dir
+# that is deleted on exit, so config must NOT live here or it never persists.
+LEGACY_CONFIG_PATH = os.path.join(os.path.dirname(SCRIPT_PATH), "config.json")
+
+
+def _user_config_path():
+    """A stable, writable per-user location for config.json."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        d = os.path.join(base, "MacroRecorder")
+    elif sys.platform == "darwin":
+        d = os.path.join(os.path.expanduser("~"), "Library",
+                         "Application Support", "MacroRecorder")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or \
+            os.path.join(os.path.expanduser("~"), ".config")
+        d = os.path.join(base, "macro-recorder")
+    try:
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, "config.json")
+    except OSError:
+        return LEGACY_CONFIG_PATH
+
+
+CONFIG_PATH = _user_config_path()
 
 # Where the self-updater looks for the latest version.
 GITHUB_RAW = ("https://raw.githubusercontent.com/"
@@ -195,8 +219,13 @@ class MacroRecorder:
     # ------------------------------------------------------------- config io
     def _load_config(self):
         cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy of defaults
+        # prefer the per-user config; fall back to a legacy one next to the
+        # script so existing source installs keep their settings
+        path = CONFIG_PATH
+        if not os.path.exists(path) and os.path.exists(LEGACY_CONFIG_PATH):
+            path = LEGACY_CONFIG_PATH
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             cfg["record_mouse"] = saved.get("record_mouse", cfg["record_mouse"])
             cfg["loop_forever"] = saved.get("loop_forever", cfg["loop_forever"])
