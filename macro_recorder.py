@@ -33,7 +33,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 # Legacy location (next to the script). A one-file .exe unpacks to a temp dir
@@ -204,6 +204,87 @@ def is_admin():
         return False
 
 
+# ---------------------------------------------------------------------------
+# Windows SendInput mouse injection.
+#
+# For playback into games (which read the mouse via Raw Input / DirectInput),
+# this is far more likely to register than pynput's "SetCursorPos then click":
+# we send an ABSOLUTE move together with the button event in a single SendInput
+# call, so the movement and the click arrive as one hardware-like event.
+# ---------------------------------------------------------------------------
+if sys.platform == "win32":
+    from ctypes import wintypes
+
+    _ULONG_PTR = wintypes.WPARAM  # pointer-sized integer
+
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                    ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", _ULONG_PTR)]
+
+    class _INPUT(ctypes.Structure):
+        class _U(ctypes.Union):
+            _fields_ = [("mi", _MOUSEINPUT)]
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+    _MOVE, _ABS, _VDESK = 0x0001, 0x8000, 0x4000
+    _WHEEL = 0x0800
+    _BTN_DOWN = {"left": 0x0002, "right": 0x0008, "middle": 0x0020,
+                 "x1": 0x0080, "x2": 0x0080}
+    _BTN_UP = {"left": 0x0004, "right": 0x0010, "middle": 0x0040,
+               "x1": 0x0100, "x2": 0x0100}
+    _XDATA = {"x1": 1, "x2": 2}
+    _SM = (76, 77, 78, 79)  # X/Y/CX/CY of the virtual screen
+
+    def _send_mouse(dx, dy, flags, data=0):
+        gm = ctypes.windll.user32.GetSystemMetrics
+        inp = _INPUT()
+        inp.type = 0  # INPUT_MOUSE
+        inp.u.mi = _MOUSEINPUT(dx, dy, data, flags, 0, 0)
+        ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+
+    def _abs_xy(x, y):
+        gm = ctypes.windll.user32.GetSystemMetrics
+        vx, vy, vw, vh = (gm(m) for m in _SM)
+        nx = int(round((x - vx) * 65535 / max(1, vw - 1)))
+        ny = int(round((y - vy) * 65535 / max(1, vh - 1)))
+        return nx, ny
+
+    def win_mouse_move(x, y):
+        nx, ny = _abs_xy(x, y)
+        _send_mouse(nx, ny, _MOVE | _ABS | _VDESK)
+
+    def win_mouse_button(x, y, name, pressed):
+        nx, ny = _abs_xy(x, y)
+        flag = (_BTN_DOWN if pressed else _BTN_UP).get(name)
+        if flag is None:
+            return
+        _send_mouse(nx, ny, _MOVE | _ABS | _VDESK | flag, data=_XDATA.get(name, 0))
+
+    def win_mouse_scroll(dy):
+        _send_mouse(0, 0, _WHEEL, data=int(round(dy)) * 120)
+
+
+def set_dpi_aware():
+    """Make the process DPI-aware so cursor coordinates are true screen pixels.
+
+    Without this, on a scaled display (e.g. 150%) the OS virtualizes coordinates:
+    recorded positions and SendInput's absolute pixels disagree, so replayed
+    clicks land in the wrong place (very noticeable in full-screen games). Must
+    run before any window is created.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        # PROCESS_PER_MONITOR_DPI_AWARE
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 def version_tuple(v):
     """Turn '1.2.0' into (1, 2, 0) for comparison; non-numeric parts -> 0."""
     out = []
@@ -217,6 +298,9 @@ def version_tuple(v):
 
 class MacroRecorder:
     def __init__(self):
+        # must run before any Tk window exists so coordinates are true pixels
+        set_dpi_aware()
+
         # --- config ---
         self.config = self._load_config()
 
@@ -282,6 +366,15 @@ class MacroRecorder:
     def _build_ui(self):
         self.root = tk.Tk()
         self.root.title("Macro Recorder")
+        # now that we're DPI-aware, keep point-sized fonts physically sensible
+        # by scaling Tk to the actual display DPI
+        if sys.platform == "win32":
+            try:
+                dpi = ctypes.windll.user32.GetDpiForWindow(self.root.winfo_id())
+                if dpi:
+                    self.root.tk.call("tk", "scaling", dpi / 72.0)
+            except Exception:
+                pass
         self.root.overrideredirect(True)      # borderless, TinyTask-like
         self.root.attributes("-topmost", True)  # always above everything
         self.root.configure(bg="#1e1e1e")
@@ -581,6 +674,20 @@ class MacroRecorder:
 
     def _replay(self, kind, ev):
         try:
+            # On Windows, drive the mouse with SendInput (absolute move + button
+            # in one event) — much more likely to register in games than pynput.
+            if sys.platform == "win32" and kind in ("move", "click", "scroll"):
+                if kind == "move":
+                    win_mouse_move(ev[2], ev[3])
+                elif kind == "click":
+                    _, _, x, y, btn, pressed = ev
+                    win_mouse_button(x, y, btn, pressed)
+                else:  # scroll
+                    _, _, x, y, dx, dy = ev
+                    win_mouse_move(x, y)
+                    win_mouse_scroll(dy)
+                return
+
             if kind == "move":
                 self._mouse_ctl.position = (ev[2], ev[3])
             elif kind == "click":
