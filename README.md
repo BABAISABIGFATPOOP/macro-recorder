@@ -88,6 +88,15 @@ From the **⚙** Settings panel you can:
 > Publishing a new version is just bumping `__version__` and pushing to `main`.
 > Every running copy pulls it on its next launch.
 
+## Troubleshooting
+
+**It doesn't record clicks/keys in a particular app.** Windows blocks a normal
+program from seeing input while an app **running as administrator** is in focus
+(many games, installers, and admin tools). Run the recorder elevated: open the
+**⚙** settings panel and click **Restart as administrator** (or right-click
+`MacroRecorder.exe` → *Run as administrator*). The settings panel shows whether
+you're currently elevated.
+
 ## Notes
 
 - Playback replays the *exact* screen coordinates that were recorded, so keep

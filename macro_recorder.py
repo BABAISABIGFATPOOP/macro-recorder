@@ -30,7 +30,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.3.5"
+__version__ = "1.3.6"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 # Legacy location (next to the script). A one-file .exe unpacks to a temp dir
@@ -168,6 +168,21 @@ def end_high_res_timer():
             ctypes.windll.winmm.timeEndPeriod(1)
         except Exception:
             pass
+
+
+def is_admin():
+    """True if the process is elevated (or not on Windows, where it's moot).
+
+    Low-level input hooks in a non-elevated process do NOT receive events while
+    an elevated window is focused — so recording/playback silently misses input
+    over apps that run as administrator. Elevating fixes that.
+    """
+    if sys.platform != "win32":
+        return True
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
 
 
 def version_tuple(v):
@@ -660,6 +675,29 @@ class MacroRecorder:
                   command=lambda: self.check_for_updates(manual=True)).grid(
                       row=base + 3, column=0, columnspan=2, pady=(6, 12))
 
+        # --- permissions section (Windows) ---
+        if sys.platform == "win32":
+            p = base + 4
+            tk.Label(win, text="Permissions", bg="#1e1e1e", fg="#ddd",
+                     font=("Segoe UI", 10, "bold")).grid(
+                         row=p, column=0, columnspan=2, padx=12, pady=(4, 2), sticky="w")
+            if is_admin():
+                tk.Label(win, text="Running as administrator ✓  —  captures over all apps",
+                         bg="#1e1e1e", fg="#7cc47c", font=("Segoe UI", 8)).grid(
+                             row=p + 1, column=0, columnspan=2, padx=12, pady=(0, 12),
+                             sticky="w")
+            else:
+                tk.Label(win,
+                         text="Not elevated. Clicks/keys inside apps run as admin\n"
+                              "(games, admin tools) won't be recorded or played.",
+                         bg="#1e1e1e", fg="#999", font=("Segoe UI", 8),
+                         justify="left").grid(row=p + 1, column=0, columnspan=2,
+                                              padx=12, sticky="w")
+                tk.Button(win, text="Restart as administrator", bg="#4a3a1a",
+                          fg="#ffd98a", relief="flat", activebackground="#5c4820",
+                          font=("Segoe UI", 8), command=self.restart_as_admin).grid(
+                              row=p + 2, column=0, columnspan=2, pady=(6, 12))
+
         win.protocol("WM_DELETE_WINDOW", self._close_settings)
 
     def _on_autoupdate_toggle(self):
@@ -819,6 +857,31 @@ class MacroRecorder:
             pass
         self.root.destroy()
         os.execl(sys.executable, sys.executable, SCRIPT_PATH, *sys.argv[1:])
+
+    def restart_as_admin(self):
+        """Relaunch elevated via UAC so input over admin windows is captured."""
+        if sys.platform != "win32" or is_admin():
+            return
+        if IS_FROZEN:
+            exe, params = sys.executable, ""          # the .exe itself
+        else:
+            exe, params = sys.executable, f'"{SCRIPT_PATH}"'  # python + script
+        try:
+            self._hotkeys.stop()
+        except Exception:
+            pass
+        try:
+            # "runas" triggers the UAC prompt; >32 means it launched
+            rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
+        except Exception as e:
+            self._set_status(f"Couldn't elevate: {e}")
+            self._apply_hotkeys()   # we stopped them; bring them back
+            return
+        if rc > 32:
+            self.root.destroy()     # elevated copy is starting; close this one
+        else:
+            self._set_status("Elevation cancelled")
+            self._apply_hotkeys()
 
     # ----------------------------------------------------------------- quit
     def quit(self):
