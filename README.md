@@ -10,6 +10,7 @@ keyboard** and replays them. The overlay is small, borderless, draggable, and
 
 - Records mouse movement, clicks, scroll, and every key press/release with timing
 - **Toggle mouse recording** off (the **Mouse** checkbox) to capture keyboard-only macros
+- **Loop forever** (the **∞ Loop** checkbox) — replays until you hit stop
 - Plays back at adjustable **speed** (0.25×–4×) and **repeat** count (1–9999)
 - Always-on-top, borderless overlay you can drag anywhere on screen
 - Save / open macros as `.json` files
@@ -20,6 +21,7 @@ keyboard** and replays them. The overlay is small, borderless, draggable, and
   | `F9`  | Start / stop recording |
   | `F10` | Play / stop playback |
   | `F11` | Stop everything |
+  | `F8`  | Start / stop **loop-forever** playback |
 
   Click the **⚙** button to rebind any of them: press the key (or a chord like
   `Ctrl + F5`) you want, and it saves automatically. Settings persist in

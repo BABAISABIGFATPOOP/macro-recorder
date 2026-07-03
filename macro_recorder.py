@@ -30,10 +30,12 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.j
 
 DEFAULT_CONFIG = {
     "record_mouse": True,
+    "loop_forever": False,
     "hotkeys": {
         "toggle_record": "<f9>",
         "toggle_play": "<f10>",
         "stop_all": "<f11>",
+        "toggle_loop_play": "<f8>",
     },
 }
 
@@ -41,6 +43,7 @@ ACTIONS = [
     ("toggle_record", "Record"),
     ("toggle_play", "Play"),
     ("stop_all", "Stop"),
+    ("toggle_loop_play", "Loop play"),
 ]
 
 MODIFIER_NAMES = {
@@ -131,6 +134,7 @@ class MacroRecorder:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             cfg["record_mouse"] = saved.get("record_mouse", cfg["record_mouse"])
+            cfg["loop_forever"] = saved.get("loop_forever", cfg["loop_forever"])
             cfg["hotkeys"].update(saved.get("hotkeys", {}))
         except (OSError, ValueError):
             pass
@@ -198,6 +202,13 @@ class MacroRecorder:
                        command=self._on_mouse_toggle, bg="#1e1e1e", fg="#ccc",
                        selectcolor="#333", activebackground="#1e1e1e",
                        activeforeground="#fff", font=("Segoe UI", 8),
+                       bd=0, highlightthickness=0).pack(side="left", padx=(0, 6))
+
+        self.loop_var = tk.BooleanVar(value=self.config["loop_forever"])
+        tk.Checkbutton(opt, text="∞ Loop", variable=self.loop_var,
+                       command=self._on_loop_toggle, bg="#1e1e1e", fg="#ccc",
+                       selectcolor="#333", activebackground="#1e1e1e",
+                       activeforeground="#fff", font=("Segoe UI", 8),
                        bd=0, highlightthickness=0).pack(side="left", padx=(0, 8))
 
         tk.Label(opt, text="Repeat", bg="#1e1e1e", fg="#999",
@@ -253,6 +264,10 @@ class MacroRecorder:
 
     def _on_mouse_toggle(self):
         self.config["record_mouse"] = self.record_mouse_var.get()
+        self._save_config()
+
+    def _on_loop_toggle(self):
+        self.config["loop_forever"] = self.loop_var.get()
         self._save_config()
 
     # ------------------------------------------------------- main-thread pump
@@ -344,12 +359,20 @@ class MacroRecorder:
         else:
             self.start_play()
 
-    def start_play(self):
+    def toggle_loop_play(self):
+        """Hotkey/button: start looping playback forever, or stop if playing."""
+        if self.playing:
+            self.stop_all()
+        else:
+            self.start_play(loop=True)
+
+    def start_play(self, loop=None):
         if self.recording or self.playing:
             return
         if not self.events:
             self._set_status("Nothing recorded yet.")
             return
+        loop_forever = self.loop_var.get() if loop is None else loop
         try:
             repeat = max(1, int(self.repeat_var.get()))
         except ValueError:
@@ -362,15 +385,15 @@ class MacroRecorder:
         self.playing = True
         self._stop_playback.clear()
         self.btn_play.config(text="⏸")
-        self._set_status(f"▶ Playing ×{repeat} @ {speed}×")
-        threading.Thread(target=self._play_worker, args=(repeat, speed),
+        count = "∞" if loop_forever else f"×{repeat}"
+        self._set_status(f"▶ Playing {count} @ {speed}×")
+        threading.Thread(target=self._play_worker, args=(repeat, speed, loop_forever),
                          daemon=True).start()
 
-    def _play_worker(self, repeat, speed):
+    def _play_worker(self, repeat, speed, loop_forever):
         try:
-            for i in range(repeat):
-                if self._stop_playback.is_set():
-                    break
+            passes = 0
+            while not self._stop_playback.is_set():
                 for ev in self.events:
                     if self._stop_playback.is_set():
                         break
@@ -383,6 +406,9 @@ class MacroRecorder:
                             time.sleep(chunk)
                             remaining -= chunk
                     self._replay(kind, ev)
+                passes += 1
+                if not loop_forever and passes >= repeat:
+                    break
         finally:
             self._queue.put(("cmd", "_playback_done"))
 
