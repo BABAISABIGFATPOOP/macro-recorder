@@ -25,6 +25,8 @@ MAC = [
     (os.path.join(ROOT, "macro_recorder.py"), "macro_recorder.py", False),
     (os.path.join(ROOT, "MacroRecorder.command"), "MacroRecorder.command", True),
     (os.path.join(ROOT, "requirements.txt"), "requirements.txt", False),
+    (os.path.join(ROOT, "icon.png"), "icon.png", False),
+    (os.path.join(ROOT, "icon.ico"), "icon.ico", False),
     (os.path.join(ROOT, "README.md"), "README.md", False),
     (os.path.join(ROOT, "README_MAC.txt"), "README_MAC.txt", False),
 ]

@@ -29,7 +29,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 CONFIG_PATH = os.path.join(os.path.dirname(SCRIPT_PATH), "config.json")
@@ -114,6 +114,12 @@ def pretty_hotkey(hotkey_str):
     return " + ".join(parts)
 
 
+def resource_path(name):
+    """Path to a bundled data file, whether running from source or a frozen exe."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(SCRIPT_PATH))
+    return os.path.join(base, name)
+
+
 def version_tuple(v):
     """Turn '1.2.0' into (1, 2, 0) for comparison; non-numeric parts -> 0."""
     out = []
@@ -190,6 +196,17 @@ class MacroRecorder:
         self.root.attributes("-topmost", True)  # always above everything
         self.root.configure(bg="#1e1e1e")
         self.root.geometry("+120+120")
+
+        # app icon (taskbar / Alt-Tab / settings window)
+        try:
+            self.root.iconbitmap(resource_path("icon.ico"))
+        except Exception:
+            pass
+        try:
+            self._icon_img = tk.PhotoImage(file=resource_path("icon.png"))
+            self.root.iconphoto(True, self._icon_img)
+        except Exception:
+            pass
 
         bar = tk.Frame(self.root, bg="#1e1e1e", bd=1, relief="solid",
                        highlightbackground="#444", highlightthickness=1)
