@@ -2,18 +2,21 @@
 Macro Recorder — a tiny TinyTask-style mouse + keyboard macro recorder.
 
 - Records mouse movement, clicks, scrolls and every key press/release with timing.
+- Mouse recording can be toggled off to capture keyboard-only macros.
 - Plays them back at adjustable speed and repeat count.
 - Small, borderless, always-on-top overlay you can drag anywhere.
-- Global hotkeys so you can control it even when another window is focused:
+- Customizable global hotkeys (defaults below) so you can control it even
+  when another window is focused:
       F9  = start / stop recording
       F10 = play / stop playback
       F11 = stop everything
-- Save / open macros as .json files.
+- Save / open macros as .json files.  Settings persist in config.json.
 
 Requires: pynput  (pip install pynput)
 """
 
 import json
+import os
 import queue
 import threading
 import time
@@ -21,6 +24,31 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 from pynput import mouse, keyboard
+
+
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+DEFAULT_CONFIG = {
+    "record_mouse": True,
+    "hotkeys": {
+        "toggle_record": "<f9>",
+        "toggle_play": "<f10>",
+        "stop_all": "<f11>",
+    },
+}
+
+ACTIONS = [
+    ("toggle_record", "Record"),
+    ("toggle_play", "Play"),
+    ("stop_all", "Stop"),
+]
+
+MODIFIER_NAMES = {
+    "ctrl_l": "ctrl", "ctrl_r": "ctrl",
+    "alt_l": "alt", "alt_r": "alt", "alt_gr": "alt",
+    "shift_l": "shift", "shift_r": "shift",
+    "cmd_l": "cmd", "cmd_r": "cmd",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -43,12 +71,34 @@ def obj_to_key(obj):
     return keyboard.KeyCode.from_vk(obj["vk"])
 
 
-# Hotkeys used to control the recorder — never recorded into a macro.
-CONTROL_KEYS = {keyboard.Key.f9, keyboard.Key.f10, keyboard.Key.f11}
+def single_key_str(key):
+    """A hotkey-style string for one key, e.g. Key.f9 -> '<f9>', 'a' -> 'a'."""
+    if isinstance(key, keyboard.Key):
+        return f"<{key.name}>"
+    if key.char is not None:
+        return key.char.lower()
+    return f"<{key.vk}>"
+
+
+def final_key_of(hotkey_str):
+    """The last (trigger) key of a hotkey chord, e.g. '<ctrl>+<f5>' -> '<f5>'."""
+    return hotkey_str.split("+")[-1]
+
+
+def pretty_hotkey(hotkey_str):
+    """Human-friendly hotkey label, e.g. '<ctrl>+<f5>' -> 'Ctrl + F5'."""
+    parts = []
+    for p in hotkey_str.split("+"):
+        p = p.strip("<>")
+        parts.append(p.upper() if len(p) <= 3 else p.capitalize())
+    return " + ".join(parts)
 
 
 class MacroRecorder:
     def __init__(self):
+        # --- config ---
+        self.config = self._load_config()
+
         # --- state ---
         self.events = []            # recorded events
         self.recording = False
@@ -57,24 +107,41 @@ class MacroRecorder:
         self._last_time = 0.0
         self._stop_playback = threading.Event()
         self._queue = queue.Queue()  # cross-thread messages -> main/UI thread
+        self._filter_keys = set()    # trigger-key strings to never record
 
         self._mouse_listener = None
         self._kbd_listener = None
         self._mouse_ctl = mouse.Controller()
         self._kbd_ctl = keyboard.Controller()
+        self._hotkeys = None
+        self._settings_win = None
 
         # --- UI ---
         self._build_ui()
 
         # --- global hotkeys (always running) ---
-        self._hotkeys = keyboard.GlobalHotKeys({
-            "<f9>": lambda: self._queue.put(("cmd", "toggle_record")),
-            "<f10>": lambda: self._queue.put(("cmd", "toggle_play")),
-            "<f11>": lambda: self._queue.put(("cmd", "stop_all")),
-        })
-        self._hotkeys.start()
+        self._apply_hotkeys()
 
         self.root.after(30, self._pump)
+
+    # ------------------------------------------------------------- config io
+    def _load_config(self):
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy of defaults
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            cfg["record_mouse"] = saved.get("record_mouse", cfg["record_mouse"])
+            cfg["hotkeys"].update(saved.get("hotkeys", {}))
+        except (OSError, ValueError):
+            pass
+        return cfg
+
+    def _save_config(self):
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.config, f, indent=2)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
@@ -118,12 +185,21 @@ class MacroRecorder:
         self.btn_rec = mk("●", lambda: self._queue.put(("cmd", "toggle_record")), "#ff5555")
         self.btn_play = mk("▶", lambda: self._queue.put(("cmd", "toggle_play")), "#55cc66")
         self.btn_stop = mk("■", lambda: self._queue.put(("cmd", "stop_all")))
-        mk("🖫", self.save)   # save
-        mk("🖿", self.open)   # open
+        mk("🖫", self.save)          # save
+        mk("🖿", self.open)          # open
+        mk("⚙", self.open_settings)  # settings / hotkeys
 
         # options row
         opt = tk.Frame(bar, bg="#1e1e1e")
         opt.pack(padx=4, pady=(0, 2))
+
+        self.record_mouse_var = tk.BooleanVar(value=self.config["record_mouse"])
+        tk.Checkbutton(opt, text="Mouse", variable=self.record_mouse_var,
+                       command=self._on_mouse_toggle, bg="#1e1e1e", fg="#ccc",
+                       selectcolor="#333", activebackground="#1e1e1e",
+                       activeforeground="#fff", font=("Segoe UI", 8),
+                       bd=0, highlightthickness=0).pack(side="left", padx=(0, 8))
+
         tk.Label(opt, text="Repeat", bg="#1e1e1e", fg="#999",
                  font=("Segoe UI", 8)).pack(side="left")
         self.repeat_var = tk.StringVar(value="1")
@@ -136,11 +212,19 @@ class MacroRecorder:
                    textvariable=self.speed_var, font=("Segoe UI", 8)).pack(side="left", padx=2)
 
         # status bar
-        self.status = tk.StringVar(value="Ready · F9 rec · F10 play · F11 stop")
+        self.status = tk.StringVar()
         tk.Label(bar, textvariable=self.status, bg="#1e1e1e", fg="#888",
                  font=("Segoe UI", 8), anchor="w").pack(fill="x", padx=6, pady=(0, 4))
+        self._set_ready_status()
 
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
+
+    def _set_ready_status(self):
+        hk = self.config["hotkeys"]
+        self.status.set(
+            f"Ready · {pretty_hotkey(hk['toggle_record'])} rec · "
+            f"{pretty_hotkey(hk['toggle_play'])} play · "
+            f"{pretty_hotkey(hk['stop_all'])} stop")
 
     # ------------------------------------------------------------- dragging
     def _start_drag(self, e):
@@ -150,6 +234,26 @@ class MacroRecorder:
         x = self.root.winfo_pointerx() - self._dx
         y = self.root.winfo_pointery() - self._dy
         self.root.geometry(f"+{x}+{y}")
+
+    # ------------------------------------------------------------ hotkeys
+    def _apply_hotkeys(self):
+        """(Re)start the global hotkey listener from the current config."""
+        if self._hotkeys is not None:
+            try:
+                self._hotkeys.stop()
+            except Exception:
+                pass
+        mapping = {}
+        for action, hk in self.config["hotkeys"].items():
+            mapping[hk] = (lambda a=action: self._queue.put(("cmd", a)))
+        self._hotkeys = keyboard.GlobalHotKeys(mapping)
+        self._hotkeys.start()
+        # keys we must never record into a macro (the hotkey triggers)
+        self._filter_keys = {final_key_of(hk) for hk in self.config["hotkeys"].values()}
+
+    def _on_mouse_toggle(self):
+        self.config["record_mouse"] = self.record_mouse_var.get()
+        self._save_config()
 
     # ------------------------------------------------------- main-thread pump
     def _pump(self):
@@ -183,13 +287,15 @@ class MacroRecorder:
         self._record_start = time.perf_counter()
         self._last_time = self._record_start
         self.btn_rec.config(text="◉")
-        self._set_status("● Recording…  (F9 to stop)")
+        mode = "mouse + keyboard" if self.config["record_mouse"] else "keyboard only"
+        self._set_status(f"● Recording ({mode})…")
 
-        self._mouse_listener = mouse.Listener(
-            on_move=self._on_move, on_click=self._on_click, on_scroll=self._on_scroll)
+        if self.config["record_mouse"]:
+            self._mouse_listener = mouse.Listener(
+                on_move=self._on_move, on_click=self._on_click, on_scroll=self._on_scroll)
+            self._mouse_listener.start()
         self._kbd_listener = keyboard.Listener(
             on_press=self._on_press, on_release=self._on_release)
-        self._mouse_listener.start()
         self._kbd_listener.start()
 
     def _delay(self):
@@ -197,6 +303,9 @@ class MacroRecorder:
         d = now - self._last_time
         self._last_time = now
         return d
+
+    def _is_hotkey(self, key):
+        return single_key_str(key) in self._filter_keys
 
     def _on_move(self, x, y):
         if self.recording:
@@ -211,11 +320,11 @@ class MacroRecorder:
             self.events.append(["scroll", self._delay(), x, y, dx, dy])
 
     def _on_press(self, key):
-        if self.recording and key not in CONTROL_KEYS:
+        if self.recording and not self._is_hotkey(key):
             self.events.append(["kpress", self._delay(), key_to_obj(key)])
 
     def _on_release(self, key):
-        if self.recording and key not in CONTROL_KEYS:
+        if self.recording and not self._is_hotkey(key):
             self.events.append(["krelease", self._delay(), key_to_obj(key)])
 
     def _stop_recording(self):
@@ -253,7 +362,7 @@ class MacroRecorder:
         self.playing = True
         self._stop_playback.clear()
         self.btn_play.config(text="⏸")
-        self._set_status(f"▶ Playing ×{repeat} @ {speed}×  (F10/F11 to stop)")
+        self._set_status(f"▶ Playing ×{repeat} @ {speed}×")
         threading.Thread(target=self._play_worker, args=(repeat, speed),
                          daemon=True).start()
 
@@ -303,7 +412,7 @@ class MacroRecorder:
     def _playback_done(self):
         self.playing = False
         self.btn_play.config(text="▶")
-        self._set_status("Ready · F9 rec · F10 play · F11 stop")
+        self._set_ready_status()
 
     # ----------------------------------------------------------------- stop
     def stop_all(self):
@@ -333,6 +442,96 @@ class MacroRecorder:
             with open(path, "r", encoding="utf-8") as f:
                 self.events = json.load(f)
             self._set_status(f"Loaded {len(self.events)} events")
+
+    # --------------------------------------------------------- settings win
+    def open_settings(self):
+        if self._settings_win is not None and tk.Toplevel.winfo_exists(self._settings_win):
+            self._settings_win.lift()
+            return
+
+        win = tk.Toplevel(self.root)
+        self._settings_win = win
+        win.title("Settings")
+        win.attributes("-topmost", True)
+        win.configure(bg="#1e1e1e")
+        win.resizable(False, False)
+
+        tk.Label(win, text="Global hotkeys", bg="#1e1e1e", fg="#ddd",
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=2,
+                                                     padx=12, pady=(12, 2), sticky="w")
+        tk.Label(win, text="Click a button, then press the key(s) you want.",
+                 bg="#1e1e1e", fg="#888", font=("Segoe UI", 8)).grid(
+                     row=1, column=0, columnspan=2, padx=12, sticky="w")
+
+        self._hk_buttons = {}
+        for i, (action, label) in enumerate(ACTIONS):
+            tk.Label(win, text=label, bg="#1e1e1e", fg="#ccc",
+                     font=("Segoe UI", 9)).grid(row=2 + i, column=0, padx=(12, 6),
+                                                pady=4, sticky="w")
+            b = tk.Button(win, text=pretty_hotkey(self.config["hotkeys"][action]),
+                          width=16, bg="#333", fg="#e0e0e0", relief="flat",
+                          activebackground="#444", activeforeground="#fff",
+                          font=("Segoe UI", 9),
+                          command=lambda a=action: self._capture_hotkey(a))
+            b.grid(row=2 + i, column=1, padx=(0, 12), pady=4)
+            self._hk_buttons[action] = b
+
+        tk.Button(win, text="Reset to defaults", bg="#2b2b2b", fg="#bbb",
+                  relief="flat", activebackground="#3a3a3a", font=("Segoe UI", 8),
+                  command=self._reset_hotkeys).grid(
+                      row=2 + len(ACTIONS), column=0, columnspan=2, pady=(6, 12))
+
+        win.protocol("WM_DELETE_WINDOW", self._close_settings)
+
+    def _close_settings(self):
+        if self._settings_win is not None:
+            self._settings_win.destroy()
+            self._settings_win = None
+
+    def _capture_hotkey(self, action):
+        """Listen for the next key chord and assign it to `action`."""
+        btn = self._hk_buttons[action]
+        btn.config(text="press keys…  (Esc = cancel)", bg="#4a3a00")
+        held = set()
+
+        def finish(new_hotkey):
+            listener.stop()
+            if new_hotkey is not None:
+                self.config["hotkeys"][action] = new_hotkey
+                self._save_config()
+                self.root.after(0, self._apply_hotkeys)
+                self.root.after(0, self._set_ready_status)
+            self.root.after(0, lambda: btn.config(
+                text=pretty_hotkey(self.config["hotkeys"][action]), bg="#333"))
+
+        def on_press(key):
+            name = getattr(key, "name", None)
+            if name == "esc":
+                finish(None)
+                return False
+            if name in MODIFIER_NAMES:
+                held.add(MODIFIER_NAMES[name])
+                return  # wait for the non-modifier trigger key
+            mods = [m for m in ("ctrl", "alt", "shift", "cmd") if m in held]
+            chord = "+".join([f"<{m}>" for m in mods] + [single_key_str(key)])
+            finish(chord)
+            return False
+
+        def on_release(key):
+            name = getattr(key, "name", None)
+            if name in MODIFIER_NAMES:
+                held.discard(MODIFIER_NAMES[name])
+
+        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        listener.start()
+
+    def _reset_hotkeys(self):
+        self.config["hotkeys"] = json.loads(json.dumps(DEFAULT_CONFIG["hotkeys"]))
+        self._save_config()
+        self._apply_hotkeys()
+        self._set_ready_status()
+        for action, b in self._hk_buttons.items():
+            b.config(text=pretty_hotkey(self.config["hotkeys"][action]))
 
     # ----------------------------------------------------------------- quit
     def quit(self):

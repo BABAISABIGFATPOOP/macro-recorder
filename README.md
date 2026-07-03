@@ -9,16 +9,22 @@ keyboard** and replays them. The overlay is small, borderless, draggable, and
 ## Features
 
 - Records mouse movement, clicks, scroll, and every key press/release with timing
+- **Toggle mouse recording** off (the **Mouse** checkbox) to capture keyboard-only macros
 - Plays back at adjustable **speed** (0.25×–4×) and **repeat** count (1–9999)
 - Always-on-top, borderless overlay you can drag anywhere on screen
 - Save / open macros as `.json` files
-- **Global hotkeys** — work even when another app is focused:
+- **Customizable global hotkeys** — work even when another app is focused. Defaults:
 
   | Key | Action |
   |-----|--------|
   | `F9`  | Start / stop recording |
   | `F10` | Play / stop playback |
   | `F11` | Stop everything |
+
+  Click the **⚙** button to rebind any of them: press the key (or a chord like
+  `Ctrl + F5`) you want, and it saves automatically. Settings persist in
+  `config.json`. Function keys work best — a normal typing key used as a hotkey
+  can't also appear inside a recorded macro.
 
 ## Setup
 
@@ -41,6 +47,7 @@ launches the app.
 | ■ | Stop |
 | 🖫 | Save macro to file |
 | 🖿 | Open macro from file |
+| ⚙ | Settings — rebind hotkeys |
 
 Drag the app by its title bar; close it with the **✕**.
 
