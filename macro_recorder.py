@@ -15,6 +15,7 @@ Macro Recorder — a tiny TinyTask-style mouse + keyboard macro recorder.
 Requires: pynput  (pip install pynput)
 """
 
+import ctypes
 import json
 import os
 import queue
@@ -29,7 +30,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 CONFIG_PATH = os.path.join(os.path.dirname(SCRIPT_PATH), "config.json")
@@ -118,6 +119,23 @@ def resource_path(name):
     """Path to a bundled data file, whether running from source or a frozen exe."""
     base = getattr(sys, "_MEIPASS", os.path.dirname(SCRIPT_PATH))
     return os.path.join(base, name)
+
+
+def begin_high_res_timer():
+    """Ask Windows for 1 ms timer granularity so short sleeps are accurate."""
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.winmm.timeBeginPeriod(1)
+        except Exception:
+            pass
+
+
+def end_high_res_timer():
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.winmm.timeEndPeriod(1)
+        except Exception:
+            pass
 
 
 def version_tuple(v):
@@ -448,26 +466,43 @@ class MacroRecorder:
                          daemon=True).start()
 
     def _play_worker(self, repeat, speed, loop_forever):
+        # 1 ms timer resolution makes the short waits between events accurate;
+        # scheduling against an absolute timeline stops timing drift building up.
+        begin_high_res_timer()
         try:
             passes = 0
             while not self._stop_playback.is_set():
+                start = time.perf_counter()
+                target = start            # running scheduled time for the next event
                 for ev in self.events:
                     if self._stop_playback.is_set():
                         break
-                    kind, delay = ev[0], ev[1]
-                    if delay > 0:
-                        # wait in small slices so Stop is responsive
-                        remaining = delay / speed
-                        while remaining > 0 and not self._stop_playback.is_set():
-                            chunk = min(0.02, remaining)
-                            time.sleep(chunk)
-                            remaining -= chunk
-                    self._replay(kind, ev)
+                    target += ev[1] / speed
+                    self._wait_until(target)
+                    if self._stop_playback.is_set():
+                        break
+                    self._replay(ev[0], ev)
                 passes += 1
                 if not loop_forever and passes >= repeat:
                     break
         finally:
+            end_high_res_timer()
             self._queue.put(("cmd", "_playback_done"))
+
+    def _wait_until(self, target):
+        """Sleep until perf_counter() reaches `target`, coarse-sleeping most of
+        the way (staying responsive to Stop) then spinning the final ~2 ms for
+        precision."""
+        while not self._stop_playback.is_set():
+            remaining = target - time.perf_counter()
+            if remaining <= 0:
+                return
+            if remaining > 0.015:
+                # leave a margin, and cap the nap so Stop stays responsive
+                time.sleep(min(remaining - 0.005, 0.03))
+            elif remaining > 0.002:
+                time.sleep(0.001)
+            # else: busy-spin the last couple of ms for tight accuracy
 
     def _replay(self, kind, ev):
         try:
