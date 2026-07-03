@@ -18,19 +18,30 @@ Requires: pynput  (pip install pynput)
 import json
 import os
 import queue
+import re
+import sys
 import threading
 import time
+import urllib.request
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 from pynput import mouse, keyboard
 
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+__version__ = "1.2.0"
+
+SCRIPT_PATH = os.path.abspath(__file__)
+CONFIG_PATH = os.path.join(os.path.dirname(SCRIPT_PATH), "config.json")
+
+# Where the self-updater looks for the latest version.
+GITHUB_RAW = ("https://raw.githubusercontent.com/"
+              "BABAISABIGFATPOOP/macro-recorder/main/macro_recorder.py")
 
 DEFAULT_CONFIG = {
     "record_mouse": True,
     "loop_forever": False,
+    "auto_update": True,
     "hotkeys": {
         "toggle_record": "<f9>",
         "toggle_play": "<f10>",
@@ -97,6 +108,17 @@ def pretty_hotkey(hotkey_str):
     return " + ".join(parts)
 
 
+def version_tuple(v):
+    """Turn '1.2.0' into (1, 2, 0) for comparison; non-numeric parts -> 0."""
+    out = []
+    for p in v.split("."):
+        try:
+            out.append(int(p))
+        except ValueError:
+            out.append(0)
+    return tuple(out)
+
+
 class MacroRecorder:
     def __init__(self):
         # --- config ---
@@ -127,6 +149,10 @@ class MacroRecorder:
 
         self.root.after(30, self._pump)
 
+        # --- check for updates shortly after launch (silent unless one exists) ---
+        if self.config["auto_update"]:
+            self.root.after(1500, lambda: self.check_for_updates(manual=False))
+
     # ------------------------------------------------------------- config io
     def _load_config(self):
         cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy of defaults
@@ -135,6 +161,7 @@ class MacroRecorder:
                 saved = json.load(f)
             cfg["record_mouse"] = saved.get("record_mouse", cfg["record_mouse"])
             cfg["loop_forever"] = saved.get("loop_forever", cfg["loop_forever"])
+            cfg["auto_update"] = saved.get("auto_update", cfg["auto_update"])
             cfg["hotkeys"].update(saved.get("hotkeys", {}))
         except (OSError, ValueError):
             pass
@@ -505,9 +532,30 @@ class MacroRecorder:
         tk.Button(win, text="Reset to defaults", bg="#2b2b2b", fg="#bbb",
                   relief="flat", activebackground="#3a3a3a", font=("Segoe UI", 8),
                   command=self._reset_hotkeys).grid(
-                      row=2 + len(ACTIONS), column=0, columnspan=2, pady=(6, 12))
+                      row=2 + len(ACTIONS), column=0, columnspan=2, pady=(6, 10))
+
+        # --- updates section ---
+        base = 3 + len(ACTIONS)
+        tk.Label(win, text=f"Updates  ·  v{__version__}", bg="#1e1e1e", fg="#ddd",
+                 font=("Segoe UI", 10, "bold")).grid(
+                     row=base, column=0, columnspan=2, padx=12, pady=(4, 2), sticky="w")
+        self.auto_update_var = tk.BooleanVar(value=self.config["auto_update"])
+        tk.Checkbutton(win, text="Check for updates on startup",
+                       variable=self.auto_update_var, command=self._on_autoupdate_toggle,
+                       bg="#1e1e1e", fg="#ccc", selectcolor="#333",
+                       activebackground="#1e1e1e", activeforeground="#fff",
+                       font=("Segoe UI", 8), bd=0, highlightthickness=0).grid(
+                           row=base + 1, column=0, columnspan=2, padx=10, sticky="w")
+        tk.Button(win, text="Check for updates now", bg="#2b4a2b", fg="#dfe",
+                  relief="flat", activebackground="#356135", font=("Segoe UI", 8),
+                  command=lambda: self.check_for_updates(manual=True)).grid(
+                      row=base + 2, column=0, columnspan=2, pady=(6, 12))
 
         win.protocol("WM_DELETE_WINDOW", self._close_settings)
+
+    def _on_autoupdate_toggle(self):
+        self.config["auto_update"] = self.auto_update_var.get()
+        self._save_config()
 
     def _close_settings(self):
         if self._settings_win is not None:
@@ -558,6 +606,72 @@ class MacroRecorder:
         self._set_ready_status()
         for action, b in self._hk_buttons.items():
             b.config(text=pretty_hotkey(self.config["hotkeys"][action]))
+
+    # -------------------------------------------------------------- updates
+    def check_for_updates(self, manual=False):
+        """Kick off a background check against GitHub. `manual` shows a result
+        even when already up to date."""
+        if manual:
+            self._set_status("Checking for updates…")
+        threading.Thread(target=self._update_worker, args=(manual,),
+                         daemon=True).start()
+
+    def _update_worker(self, manual):
+        try:
+            req = urllib.request.Request(
+                GITHUB_RAW, headers={"User-Agent": "MacroRecorder-Updater"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                remote_src = resp.read().decode("utf-8")
+        except Exception:
+            if manual:
+                self._set_status("Update check failed — no connection?")
+            return
+
+        m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', remote_src)
+        remote_ver = m.group(1) if m else None
+        if not remote_ver:
+            if manual:
+                self._set_status("Couldn't read the remote version.")
+            return
+
+        if version_tuple(remote_ver) > version_tuple(__version__):
+            self.root.after(0, lambda: self._prompt_update(remote_ver, remote_src))
+        elif manual:
+            self._set_status(f"Up to date (v{__version__}).")
+
+    def _prompt_update(self, remote_ver, remote_src):
+        if not messagebox.askyesno(
+                "Update available",
+                f"A new version is available.\n\n"
+                f"  Installed:  v{__version__}\n  Latest:     v{remote_ver}\n\n"
+                f"Download and install it now?"):
+            return
+        try:
+            # keep a .bak so a bad update can be rolled back
+            with open(SCRIPT_PATH, "r", encoding="utf-8") as f:
+                old = f.read()
+            with open(SCRIPT_PATH + ".bak", "w", encoding="utf-8") as f:
+                f.write(old)
+            with open(SCRIPT_PATH, "w", encoding="utf-8") as f:
+                f.write(remote_src)
+        except OSError as e:
+            messagebox.showerror("Update failed", f"Could not write the update:\n{e}")
+            return
+
+        if messagebox.askyesno(
+                "Update installed",
+                f"Updated to v{remote_ver}.\n\nRestart now to apply it?"):
+            self._restart()
+        else:
+            self._set_status(f"Updated to v{remote_ver} — restart to apply.")
+
+    def _restart(self):
+        try:
+            self._hotkeys.stop()
+        except Exception:
+            pass
+        self.root.destroy()
+        os.execl(sys.executable, sys.executable, SCRIPT_PATH, *sys.argv[1:])
 
     # ----------------------------------------------------------------- quit
     def quit(self):
