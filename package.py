@@ -8,6 +8,7 @@ Usage:  py package.py
 """
 
 import os
+import shutil
 import stat
 import zipfile
 
@@ -47,7 +48,13 @@ def make_zip(zip_name, top_folder, files):
     print(f"  {zip_name}  ({size:.1f} MB)")
 
 
-print("Writing zips to release/ ...")
+print("Writing release artifacts to release/ ...")
 make_zip("MacroRecorder-Windows.zip", "MacroRecorder", WINDOWS)
 make_zip("MacroRecorder-Mac.zip", "MacroRecorder", MAC)
+
+# also drop the bare .exe alongside the zips for a one-click download
+exe = os.path.join(ROOT, "dist", "MacroRecorder.exe")
+if os.path.exists(exe):
+    shutil.copy2(exe, os.path.join(REL, "MacroRecorder.exe"))
+    print("  MacroRecorder.exe")
 print("Done.")

@@ -34,11 +34,16 @@ keyboard** and replays them. The overlay is small, borderless, draggable, and
 Grab the latest build from the
 [**Releases** page](https://github.com/BABAISABIGFATPOOP/macro-recorder/releases/latest):
 
-- **Windows** — `MacroRecorder-Windows.zip`. Unzip and double-click
-  `MacroRecorder.exe`. No Python needed.
+- **Windows** — download **`MacroRecorder.exe`** and just run it (no Python
+  needed), or grab **`MacroRecorder-Windows.zip`** if you'd rather have it
+  zipped with the README.
 - **macOS** — `MacroRecorder-Mac.zip`. Unzip and double-click
   `MacroRecorder.command` (see `README_MAC.txt` inside for the one-time
   permission setup). Requires Python 3.
+
+Every past version is also available on the
+[Releases page](https://github.com/BABAISABIGFATPOOP/macro-recorder/releases),
+each with its own `.exe` and zips.
 
 ## Run from source
 
