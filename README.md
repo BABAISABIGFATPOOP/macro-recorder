@@ -73,10 +73,14 @@ Drag the app by its title bar; close it with the **✕**.
 ## Auto-update
 
 On startup the app quietly checks this GitHub repo for a newer version (by
-comparing its `__version__`). If one exists it **installs it automatically** —
-downloads the new `macro_recorder.py`, keeps a `.bak` of the old one, and
-restarts itself to apply it. The restart is deferred until the app is idle, so
-it never interrupts an active recording or playback.
+comparing its `__version__`). If one exists it **installs it automatically** and
+restarts to apply it — deferred until the app is idle, so it never interrupts an
+active recording or playback.
+
+- The **`.exe`** downloads the newest packaged `MacroRecorder.exe` and swaps
+  itself in on restart (a tiny helper script replaces the running file once it
+  closes, then relaunches it).
+- The **source** version rewrites its own `macro_recorder.py` (keeping a `.bak`).
 
 From the **⚙** Settings panel you can:
 

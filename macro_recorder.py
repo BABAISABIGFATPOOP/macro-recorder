@@ -20,7 +20,10 @@ import json
 import os
 import queue
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -30,7 +33,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.3.6"
+__version__ = "1.4.0"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 # Legacy location (next to the script). A one-file .exe unpacks to a temp dir
@@ -63,6 +66,22 @@ CONFIG_PATH = _user_config_path()
 GITHUB_RAW = ("https://raw.githubusercontent.com/"
               "BABAISABIGFATPOOP/macro-recorder/main/macro_recorder.py")
 RELEASES_URL = "https://github.com/BABAISABIGFATPOOP/macro-recorder/releases/latest"
+# Direct download of the newest packaged exe (GitHub redirects to the latest asset).
+EXE_DOWNLOAD_URL = ("https://github.com/BABAISABIGFATPOOP/macro-recorder/"
+                    "releases/latest/download/MacroRecorder.exe")
+
+# Batch that waits for the running exe to exit, swaps in the new one, relaunches.
+# {new} = downloaded exe, {target} = the exe to replace.
+SWAP_SCRIPT = '''@echo off
+:retry
+move /y "{new}" "{target}" >nul 2>&1
+if errorlevel 1 (
+  timeout /t 1 /nobreak >nul
+  goto retry
+)
+start "" "{target}"
+del "%~f0"
+'''
 
 # True when running as a packaged PyInstaller .exe (can't self-overwrite the
 # source in that case, so we just point the user at the Releases page).
@@ -218,6 +237,7 @@ class MacroRecorder:
         self._hotkeys = None
         self._settings_win = None
         self._pending_restart = False  # set once an update is written & app idle
+        self._staged_update = None     # (version, new_exe, target_exe) for a frozen swap
 
         # --- UI ---
         self._build_ui()
@@ -407,7 +427,10 @@ class MacroRecorder:
         # apply a downloaded update only once the app is idle
         if self._pending_restart and not self.recording and not self.playing:
             self._pending_restart = False
-            self._restart()
+            if self._staged_update:
+                self._apply_staged_update()   # frozen exe: swap + relaunch
+            else:
+                self._restart()               # source: re-exec in place
             return
         self.root.after(30, self._pump)
 
@@ -794,16 +817,12 @@ class MacroRecorder:
         """A newer version exists — install it silently, or ask first if the
         'install automatically' setting is turned off."""
         if IS_FROZEN:
-            # A packaged .exe can't rewrite itself with Python source — point
-            # the user at the Releases page for the new download instead.
-            self._set_status(f"v{remote_ver} available — see Releases page")
-            if manual:
-                if messagebox.askyesno(
-                        "Update available",
-                        f"A new version (v{remote_ver}) is available.\n"
-                        f"You have v{__version__}.\n\nOpen the download page now?"):
-                    import webbrowser
-                    webbrowser.open(RELEASES_URL)
+            # Packaged .exe: download the new exe and swap it in on restart.
+            if self.config["auto_install"] or messagebox.askyesno(
+                    "Update available",
+                    f"A new version (v{remote_ver}) is available.\n"
+                    f"You have v{__version__}.\n\nDownload and install it now?"):
+                self._install_update_frozen(remote_ver)
             return
         if self.config["auto_install"]:
             self._install_update(remote_ver, remote_src)
@@ -826,12 +845,60 @@ class MacroRecorder:
             return False
 
     def _install_update(self, remote_ver, remote_src):
-        """Fully automatic path: write the update, then restart when idle."""
+        """Fully automatic path (source): write the update, restart when idle."""
         if not self._write_update(remote_src):
             return
         self._set_status(f"Updated to v{remote_ver} — restarting…")
         # small delay so the message is visible; pump restarts once idle
         self.root.after(1200, lambda: setattr(self, "_pending_restart", True))
+
+    def _install_update_frozen(self, remote_ver):
+        """Packaged .exe path: download the new exe in the background, then have
+        the pump swap it in and relaunch once the app is idle."""
+        self._set_status(f"Downloading v{remote_ver}…")
+        threading.Thread(target=self._frozen_update_worker, args=(remote_ver,),
+                         daemon=True).start()
+
+    def _frozen_update_worker(self, remote_ver):
+        target = sys.executable            # the running .exe
+        newexe = target + ".new"
+        try:
+            req = urllib.request.Request(
+                EXE_DOWNLOAD_URL, headers={"User-Agent": "MacroRecorder-Updater"})
+            with urllib.request.urlopen(req, timeout=120) as r, \
+                    open(newexe, "wb") as f:
+                shutil.copyfileobj(r, f)
+        except Exception:
+            self._set_status("Update download failed — check your connection.")
+            return
+        if os.path.getsize(newexe) < 1_000_000:   # sanity: real exe is ~12 MB
+            self._set_status("Update download looked corrupt — skipped.")
+            try:
+                os.remove(newexe)
+            except OSError:
+                pass
+            return
+        self._staged_update = (remote_ver, newexe, target)
+        self._set_status(f"v{remote_ver} downloaded — restarting to apply…")
+        self.root.after(1000, lambda: setattr(self, "_pending_restart", True))
+
+    def _apply_staged_update(self):
+        """Launch the swap script (waits for exit, replaces exe, relaunches)."""
+        remote_ver, newexe, target = self._staged_update
+        bat = os.path.join(tempfile.gettempdir(), "macro_recorder_update.bat")
+        try:
+            with open(bat, "w", encoding="utf-8") as f:
+                f.write(SWAP_SCRIPT.format(new=newexe, target=target))
+            flags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
+            subprocess.Popen(["cmd", "/c", bat], creationflags=flags, close_fds=True)
+        except Exception as e:
+            self._set_status(f"Update failed to launch: {e}")
+            return
+        try:
+            self._hotkeys.stop()
+        except Exception:
+            pass
+        self.root.destroy()   # release the exe lock so the swap can proceed
 
     def _prompt_update(self, remote_ver, remote_src):
         """Ask-first path (used when auto-install is disabled)."""
