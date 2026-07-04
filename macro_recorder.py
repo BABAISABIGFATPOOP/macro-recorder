@@ -33,7 +33,7 @@ from tkinter import filedialog, messagebox
 from pynput import mouse, keyboard
 
 
-__version__ = "1.4.2"
+__version__ = "1.4.3"
 
 SCRIPT_PATH = os.path.abspath(__file__)
 # Legacy location (next to the script). A one-file .exe unpacks to a temp dir
@@ -222,9 +222,14 @@ if sys.platform == "win32":
                     ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
                     ("time", wintypes.DWORD), ("dwExtraInfo", _ULONG_PTR)]
 
+    class _KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("dwExtraInfo", _ULONG_PTR)]
+
     class _INPUT(ctypes.Structure):
         class _U(ctypes.Union):
-            _fields_ = [("mi", _MOUSEINPUT)]
+            _fields_ = [("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT)]
         _fields_ = [("type", wintypes.DWORD), ("u", _U)]
 
     _MOVE, _ABS, _VDESK = 0x0001, 0x8000, 0x4000
@@ -263,6 +268,51 @@ if sys.platform == "win32":
 
     def win_mouse_scroll(dy):
         _send_mouse(0, 0, _WHEEL, data=int(round(dy)) * 120)
+
+    # --- keyboard via SendInput scan codes (most reliable, layout-accurate) ---
+    _KEYEVENTF_EXTENDED = 0x0001
+    _KEYEVENTF_KEYUP = 0x0002
+    _KEYEVENTF_UNICODE = 0x0004
+    _KEYEVENTF_SCANCODE = 0x0008
+    # vks that must carry the EXTENDED flag (nav cluster, arrows, r-ctrl/alt, …)
+    _EXT_VKS = {0xA3, 0xA5, 0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22,
+                0x25, 0x26, 0x27, 0x28, 0x90, 0x6F, 0x2C, 0x5B, 0x5C, 0x5D}
+
+    def _send_key(vk, scan, flags):
+        inp = _INPUT()
+        inp.type = 1  # INPUT_KEYBOARD
+        inp.u.ki = _KEYBDINPUT(vk, scan, flags, 0, 0)
+        ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+
+    def win_key(vk, pressed, char=None):
+        """Inject one key event by scan code (or Unicode if there's no vk)."""
+        if vk:
+            scan = ctypes.windll.user32.MapVirtualKeyW(vk, 0)  # VK -> scan code
+            if scan:
+                flags = _KEYEVENTF_SCANCODE
+                if vk in _EXT_VKS:
+                    flags |= _KEYEVENTF_EXTENDED
+                if not pressed:
+                    flags |= _KEYEVENTF_KEYUP
+                _send_key(0, scan, flags)
+                return
+            # no scan code available — fall back to the virtual key itself
+            flags = 0 if pressed else _KEYEVENTF_KEYUP
+            _send_key(vk, 0, flags)
+            return
+        if char:  # injected Unicode (no physical key)
+            flags = _KEYEVENTF_UNICODE | (0 if pressed else _KEYEVENTF_KEYUP)
+            _send_key(0, ord(char), flags)
+
+
+def obj_vk(obj):
+    """The virtual key code for a recorded key dict (special keys included)."""
+    if "special" in obj:
+        try:
+            return getattr(keyboard.Key, obj["special"]).value.vk
+        except Exception:
+            return None
+    return obj.get("vk")
 
 
 def set_dpi_aware():
@@ -640,11 +690,16 @@ class MacroRecorder:
         # 1 ms timer resolution makes the short waits between events accurate;
         # scheduling against an absolute timeline stops timing drift building up.
         begin_high_res_timer()
+        # Guarantee a minimum spacing between keyboard events so a target app
+        # can't drop/reorder characters when the recorded typing was very fast
+        # (well under any human typing rate, so it doesn't slow real macros).
+        KEY_GAP = 0.008
         try:
             passes = 0
             while not self._stop_playback.is_set():
                 start = time.perf_counter()
                 target = start            # running scheduled time for the next event
+                last_key = 0.0
                 for ev in self.events:
                     if self._stop_playback.is_set():
                         break
@@ -652,6 +707,11 @@ class MacroRecorder:
                     self._wait_until(target)
                     if self._stop_playback.is_set():
                         break
+                    if ev[0] in ("kpress", "krelease"):
+                        gap = KEY_GAP - (time.perf_counter() - last_key)
+                        if gap > 0:
+                            time.sleep(gap)
+                        last_key = time.perf_counter()
                     self._replay(ev[0], ev)
                 passes += 1
                 if not loop_forever and passes >= repeat:
@@ -677,18 +737,23 @@ class MacroRecorder:
 
     def _replay(self, kind, ev):
         try:
-            # On Windows, drive the mouse with SendInput (absolute move + button
-            # in one event) — much more likely to register in games than pynput.
-            if sys.platform == "win32" and kind in ("move", "click", "scroll"):
+            # On Windows, drive input with SendInput: mouse as an absolute move +
+            # button in one event, keyboard by scan code. Both are far more
+            # reliable/accurate than pynput's higher-level path.
+            if sys.platform == "win32" and kind in (
+                    "move", "click", "scroll", "kpress", "krelease"):
                 if kind == "move":
                     win_mouse_move(ev[2], ev[3])
                 elif kind == "click":
                     _, _, x, y, btn, pressed = ev
                     win_mouse_button(x, y, btn, pressed)
-                else:  # scroll
+                elif kind == "scroll":
                     _, _, x, y, dx, dy = ev
                     win_mouse_move(x, y)
                     win_mouse_scroll(dy)
+                else:  # kpress / krelease
+                    obj = ev[2]
+                    win_key(obj_vk(obj), kind == "kpress", obj.get("char"))
                 return
 
             if kind == "move":
